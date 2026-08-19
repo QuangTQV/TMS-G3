@@ -1,0 +1,1007 @@
+// Schema khái niệm ban đầu — bám theo docs/data-model.md và docs/security-audit.md.
+// Chỉ phủ phần lõi của module 2, 3, 4, 6, 10, 12 để dựng luồng
+// Khách hàng -> Báo giá -> Đơn -> Chuyến. Mở rộng dần theo từng module khi implement.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Module 12 — Quản trị hệ thống và tích hợp (kernel dùng chung)
+// ─────────────────────────────────────────────────────────────────────────
+
+model Branch {
+  id        String   @id @default(uuid())
+  code      String   @unique
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users                    User[]
+  customers                Customer[]
+  orders                   ShipmentOrder[]
+  trips                    Trip[]
+  vehicles                 Vehicle[]
+  drivers                  Driver[]
+  carriers                 Carrier[]
+  contracts                Contract[]
+  documentEvidences        DocumentEvidence[]
+  tripCostPlans            TripCostPlan[]
+  tripCostActuals          TripCostActual[]
+  advances                 Advance[]
+  reconciliationStatements ReconciliationStatement[]
+  invoices                 Invoice[]
+  accountsReceivable       AccountsReceivable[]
+  accountsPayable          AccountsPayable[]
+
+  @@map("branches")
+}
+
+model User {
+  id           String    @id @default(uuid())
+  branchId     String
+  branch       Branch    @relation(fields: [branchId], references: [id])
+  email        String    @unique
+  passwordHash String
+  fullName     String
+  isActive     Boolean   @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  roles UserRole[]
+
+  @@index([branchId])
+  @@map("users")
+}
+
+model Role {
+  id        String   @id @default(uuid())
+  code      String   @unique // vd: SALES, PLANNER, ACCOUNTANT — xem docs/roles-channels.md
+  name      String
+  createdAt DateTime @default(now())
+
+  users       UserRole[]
+  permissions RolePermission[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id     String @id @default(uuid())
+  code   String @unique // vd: quote:approve, invoice:issue
+  module String // tên module sở hữu chức năng, vd: "contract-pricing-quote"
+
+  roles RolePermission[]
+
+  @@map("permissions")
+}
+
+model UserRole {
+  userId String
+  roleId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@map("user_roles")
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+// Nhật ký kiểm toán — append-only theo docs/security-audit.md. Không có API
+// update/delete cho model này; chỉ INSERT qua AuditLogService.
+model AuditLog {
+  id          String   @id @default(uuid())
+  entityType  String
+  entityId    String
+  action      String // CREATE | UPDATE | CANCEL | SPLIT | MERGE | APPROVE ...
+  actorUserId String
+  actorRole   String?
+  occurredAt  DateTime @default(now())
+  reason      String?
+  beforeState Json?
+  afterState  Json?
+
+  @@index([entityType, entityId])
+  @@map("audit_logs")
+}
+
+// Lưu kết quả xử lý theo (idempotencyKey, endpoint) — bắt buộc cho endpoint ghi dữ
+// liệu gọi từ app tài xế (ràng buộc 1, CLAUDE.md; docs/api-conventions.md mục 4).
+model IdempotencyRecord {
+  id             String   @id @default(uuid())
+  idempotencyKey String
+  endpoint       String
+  responseBody   Json
+  createdAt      DateTime @default(now())
+
+  @@unique([idempotencyKey, endpoint])
+  @@map("idempotency_records")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Module 2 — Khách hàng và chăm sóc quan hệ
+// ─────────────────────────────────────────────────────────────────────────
+
+enum CustomerStatus {
+  ACTIVE
+  LOCKED
+}
+
+model Customer {
+  id              String         @id @default(uuid())
+  branchId        String
+  branch          Branch         @relation(fields: [branchId], references: [id])
+  code            String         @unique
+  legalName       String
+  taxCode         String
+  status          CustomerStatus @default(ACTIVE)
+  paymentTermDays Int            @default(30)
+  creditLimit     Decimal?       @db.Decimal(18, 2)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  contacts                 CustomerContact[]
+  locations                CustomerLocation[]
+  contracts                Contract[]
+  quotes                   Quote[]
+  orders                   ShipmentOrder[]
+  reconciliationStatements ReconciliationStatement[]
+  invoices                 Invoice[]
+  accountsReceivable       AccountsReceivable[]
+
+  @@index([branchId])
+  @@map("customers")
+}
+
+model CustomerContact {
+  id         String   @id @default(uuid())
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  fullName   String
+  phone      String?
+  email      String?
+  isPrimary  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  @@index([customerId])
+  @@map("customer_contacts")
+}
+
+model CustomerLocation {
+  id         String   @id @default(uuid())
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  name       String
+  address    String
+  lat        Decimal? @db.Decimal(9, 6)
+  lng        Decimal? @db.Decimal(9, 6)
+  isPickup   Boolean  @default(true)
+  isDelivery Boolean  @default(true)
+  createdAt  DateTime @default(now())
+
+  points PickupDeliveryPoint[]
+
+  @@index([customerId])
+  @@map("customer_locations")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Module 3 — Hợp đồng, bảng giá và báo giá
+// ─────────────────────────────────────────────────────────────────────────
+
+enum ContractStatus {
+  DRAFT
+  SIGNED
+  EXPIRED
+  TERMINATED
+}
+
+model Contract {
+  id            String         @id @default(uuid())
+  branchId      String
+  branch        Branch         @relation(fields: [branchId], references: [id])
+  customerId    String
+  customer      Customer       @relation(fields: [customerId], references: [id])
+  code          String         @unique
+  status        ContractStatus @default(DRAFT)
+  effectiveFrom DateTime
+  effectiveTo   DateTime?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  priceLists PriceList[]
+  quotes     Quote[]
+
+  @@index([branchId])
+  @@index([customerId])
+  @@map("contracts")
+}
+
+enum PriceListStatus {
+  DRAFT
+  PENDING_APPROVAL
+  ACTIVE
+  SUPERSEDED
+}
+
+// Giá bán do module 3 sở hữu. Giá mua thuộc module 10 (Carrier.purchasePrice*) —
+// module 3 chỉ tham chiếu để tính biên lợi nhuận, không lưu bản sao ở đây.
+// Xem docs/data-model.md mục 4.
+model PriceList {
+  id               String          @id @default(uuid())
+  contractId       String
+  contract         Contract        @relation(fields: [contractId], references: [id])
+  version          Int             @default(1)
+  status           PriceListStatus @default(DRAFT)
+  effectiveFrom    DateTime
+  effectiveTo      DateTime?
+  createdAt        DateTime        @default(now())
+  approvedAt       DateTime?
+  approvedByUserId String?
+
+  lines      PriceListLine[]
+  surcharges Surcharge[]
+
+  @@index([contractId])
+  @@map("price_lists")
+}
+
+model PriceListLine {
+  id          String    @id @default(uuid())
+  priceListId String
+  priceList   PriceList @relation(fields: [priceListId], references: [id], onDelete: Cascade)
+  originLabel String // tuyến/khu vực đi — mô tả tự do R1, chuẩn hoá theo Route sau
+  destLabel   String
+  vehicleType String?
+  unitPrice   Decimal   @db.Decimal(18, 2)
+  unit        String // vd: "chuyến", "km", "container", "tấn"
+
+  @@index([priceListId])
+  @@map("price_list_lines")
+}
+
+enum SurchargeType {
+  FUEL
+  TOLL
+  WAITING
+  LIFT_ON_OFF
+  OVERTIME
+  YARD_STORAGE
+  OTHER
+}
+
+model Surcharge {
+  id          String        @id @default(uuid())
+  priceListId String
+  priceList   PriceList     @relation(fields: [priceListId], references: [id], onDelete: Cascade)
+  type        SurchargeType
+  name        String
+  amount      Decimal       @db.Decimal(18, 2)
+  isPercent   Boolean       @default(false)
+
+  @@index([priceListId])
+  @@map("surcharges")
+}
+
+enum QuoteStatus {
+  DRAFT
+  SENT
+  ACCEPTED
+  REJECTED
+  EXPIRED
+}
+
+model Quote {
+  id                String      @id @default(uuid())
+  branchId          String
+  code              String      @unique
+  customerId        String
+  customer          Customer    @relation(fields: [customerId], references: [id])
+  contractId        String?
+  contract          Contract?   @relation(fields: [contractId], references: [id])
+  status            QuoteStatus @default(DRAFT)
+  sellTotal         Decimal     @db.Decimal(18, 2)
+  estimatedBuyTotal Decimal?    @db.Decimal(18, 2) // tham chiếu giá mua dự kiến để tính biên lợi nhuận
+  marginAmount      Decimal?    @db.Decimal(18, 2)
+  validUntil        DateTime?
+  sentAt            DateTime?
+  respondedAt       DateTime?
+  createdByUserId   String
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  lines  QuoteLine[]
+  orders ShipmentOrder[]
+
+  @@index([customerId])
+  @@map("quotes")
+}
+
+model QuoteLine {
+  id          String  @id @default(uuid())
+  quoteId     String
+  quote       Quote   @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  description String
+  quantity    Decimal @db.Decimal(12, 2)
+  unitPrice   Decimal @db.Decimal(18, 2)
+  lineTotal   Decimal @db.Decimal(18, 2)
+
+  @@index([quoteId])
+  @@map("quote_lines")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Module 4 — Tiếp nhận yêu cầu và đơn vận chuyển
+// ─────────────────────────────────────────────────────────────────────────
+
+enum ShipmentOrderStatus {
+  DRAFT
+  CONFIRMED
+  PLANNED
+  IN_TRANSIT
+  DELIVERED
+  CLOSED
+  CANCELLED
+  HELD
+}
+
+model ShipmentOrder {
+  id                String              @id @default(uuid())
+  branchId          String
+  branch            Branch              @relation(fields: [branchId], references: [id])
+  code              String              @unique
+  customerId        String
+  customer          Customer            @relation(fields: [customerId], references: [id])
+  quoteId           String?
+  quote             Quote?              @relation(fields: [quoteId], references: [id])
+  customerRef       String? // PO/DO/booking do khách cung cấp
+  sourceChannel     String // nhập tay | excel | email | zalo | api | đơn cũ — giữ nguồn gốc dữ liệu
+  status            ShipmentOrderStatus @default(DRAFT)
+  sellTotal         Decimal             @db.Decimal(18, 2)
+  estimatedBuyTotal Decimal?            @db.Decimal(18, 2)
+  cancelReason      String?
+  createdByUserId   String
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  points              PickupDeliveryPoint[]
+  cargos              Cargo[]
+  tripLinks           TripOrderLink[]
+  reconciliationLines ReconciliationLine[]
+
+  @@index([branchId])
+  @@index([customerId])
+  @@map("shipment_orders")
+}
+
+enum StopType {
+  PICKUP
+  DELIVERY
+}
+
+model PickupDeliveryPoint {
+  id                 String            @id @default(uuid())
+  shipmentOrderId    String
+  shipmentOrder      ShipmentOrder     @relation(fields: [shipmentOrderId], references: [id], onDelete: Cascade)
+  sequence           Int
+  type               StopType
+  customerLocationId String?
+  customerLocation   CustomerLocation? @relation(fields: [customerLocationId], references: [id])
+  freeAddress        String? // dùng khi điểm không thuộc CustomerLocation đã lưu
+  windowFrom         DateTime?
+  windowTo           DateTime?
+  bookingNumber      String?
+  containerNumber    String?
+  sealNumber         String?
+  depotCode          String?
+  cutOffAt           DateTime?
+
+  @@index([shipmentOrderId])
+  @@map("pickup_delivery_points")
+}
+
+model Cargo {
+  id              String        @id @default(uuid())
+  shipmentOrderId String
+  shipmentOrder   ShipmentOrder @relation(fields: [shipmentOrderId], references: [id], onDelete: Cascade)
+  description     String
+  packageCount    Int?
+  weightKg        Decimal?      @db.Decimal(12, 2)
+  volumeCbm       Decimal?      @db.Decimal(12, 3)
+  requiresStorage String? // vd: "khô", "lạnh" — danh mục hoá sau ở module 12
+
+  @@index([shipmentOrderId])
+  @@map("cargos")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Module 10 — Nguồn lực và đối tác vận tải (tối thiểu, phục vụ gán chuyến)
+// ─────────────────────────────────────────────────────────────────────────
+
+model Vehicle {
+  id               String    @id @default(uuid())
+  branchId         String
+  branch           Branch    @relation(fields: [branchId], references: [id])
+  plateNumber      String    @unique
+  vehicleType      String
+  loadCapacityKg   Decimal?  @db.Decimal(12, 2)
+  isMaintenance    Boolean   @default(false)
+  maintenanceUntil DateTime?
+  createdAt        DateTime  @default(now())
+
+  trips Trip[]
+
+  @@index([branchId])
+  @@map("vehicles")
+}
+
+model Driver {
+  id            String   @id @default(uuid())
+  branchId      String
+  branch        Branch   @relation(fields: [branchId], references: [id])
+  carrierId     String? // null = tài xế nội bộ G3; có giá trị = tài xế của nhà vận tải
+  carrier       Carrier? @relation(fields: [carrierId], references: [id])
+  fullName      String
+  phone         String
+  licenseNumber String
+  userId        String?  @unique // liên kết tài khoản đăng nhập app tài xế (module 12)
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+
+  trips Trip[]
+
+  @@index([branchId])
+  @@index([carrierId])
+  @@map("drivers")
+}
+
+enum CarrierStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+// Giá mua (purchasePrice) do module 10 sở hữu — module 3 chỉ tham chiếu để tính
+// biên lợi nhuận (xem PriceList ở trên). Xem docs/data-model.md mục 4.
+model Carrier {
+  id        String        @id @default(uuid())
+  branchId  String
+  branch    Branch        @relation(fields: [branchId], references: [id])
+  code      String        @unique
+  legalName String
+  status    CarrierStatus @default(ACTIVE)
+  createdAt DateTime      @default(now())
+
+  drivers                  Driver[]
+  trips                    Trip[]
+  reconciliationStatements ReconciliationStatement[]
+  accountsPayable          AccountsPayable[]
+
+  @@index([branchId])
+  @@map("carriers")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Module 6 — Chuyến vận tải, theo dõi và ngoại lệ
+// ─────────────────────────────────────────────────────────────────────────
+
+enum TripStatus {
+  PLANNED
+  DISPATCHED
+  IN_PROGRESS
+  COMPLETED_PENDING_DOCS
+  COMPLETED_VERIFIED
+  CLOSED
+  PAUSED
+  CANCELLED
+  EXCEPTION
+}
+
+model Trip {
+  id              String     @id @default(uuid())
+  branchId        String
+  branch          Branch     @relation(fields: [branchId], references: [id])
+  code            String     @unique
+  status          TripStatus @default(PLANNED)
+  vehicleId       String?
+  vehicle         Vehicle?   @relation(fields: [vehicleId], references: [id])
+  driverId        String?
+  driver          Driver?    @relation(fields: [driverId], references: [id])
+  carrierId       String? // gán cho nhà vận tải thuê ngoài thay vì nội bộ
+  carrier         Carrier?   @relation(fields: [carrierId], references: [id])
+  isOutsourced    Boolean    @default(false)
+  pauseReason     String?
+  cancelReason    String?
+  createdByUserId String
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  stops               TripStop[]
+  orderLinks          TripOrderLink[]
+  documentEvidences   DocumentEvidence[]
+  costPlans           TripCostPlan[]
+  actualCosts         TripCostActual[]
+  advances            Advance[]
+  reconciliationLines ReconciliationLine[]
+
+  @@index([branchId])
+  @@map("trips")
+}
+
+model TripStop {
+  id         String    @id @default(uuid())
+  tripId     String
+  trip       Trip      @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  sequence   Int
+  type       StopType
+  plannedAt  DateTime?
+  arrivedAt  DateTime?
+  departedAt DateTime?
+
+  @@index([tripId])
+  @@map("trip_stops")
+}
+
+// Quan hệ N-N giữa Trip và ShipmentOrder — phục vụ ghép/tách chuyến.
+// Xem docs/data-model.md mục 2.
+model TripOrderLink {
+  id              String        @id @default(uuid())
+  tripId          String
+  trip            Trip          @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  shipmentOrderId String
+  shipmentOrder   ShipmentOrder @relation(fields: [shipmentOrderId], references: [id])
+  splitReason     String?
+  createdAt       DateTime      @default(now())
+
+  @@unique([tripId, shipmentOrderId])
+  @@index([shipmentOrderId])
+  @@map("trip_order_links")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Module 8 — Chi phí, tạm ứng và quyết toán chuyến
+// Giá trị tiền không bị xóa: chỉ đi qua trạng thái và luôn có AuditLog.
+// ─────────────────────────────────────────────────────────────────────────
+
+enum TripCostCategory {
+  FUEL
+  TOLL
+  PARKING
+  LIFT_ON_OFF
+  WAITING
+  REPAIR
+  OTHER
+}
+
+enum TripCostActualStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+}
+
+enum AdvanceStatus {
+  REQUESTED
+  APPROVED
+  PAID
+  SETTLED
+  CANCELLED
+}
+
+model TripCostPlan {
+  id              String           @id @default(uuid())
+  branchId        String
+  branch          Branch           @relation(fields: [branchId], references: [id])
+  tripId          String
+  trip            Trip             @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  category        TripCostCategory
+  description     String
+  amount          Decimal          @db.Decimal(18, 2)
+  createdByUserId String
+  createdAt       DateTime         @default(now())
+
+  @@index([branchId])
+  @@index([tripId])
+  @@map("trip_cost_plans")
+}
+
+model TripCostActual {
+  id                String               @id @default(uuid())
+  branchId          String
+  branch            Branch               @relation(fields: [branchId], references: [id])
+  tripId            String
+  trip              Trip                 @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  category          TripCostCategory
+  description       String
+  amount            Decimal              @db.Decimal(18, 2)
+  incurredAt        DateTime
+  evidenceId        String?
+  status            TripCostActualStatus @default(DRAFT)
+  rejectionReason   String?
+  submittedByUserId String
+  approvedByUserId  String?
+  approvedAt        DateTime?
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+
+  @@index([branchId])
+  @@index([tripId])
+  @@index([status])
+  @@map("trip_cost_actuals")
+}
+
+model Advance {
+  id                String        @id @default(uuid())
+  branchId          String
+  branch            Branch        @relation(fields: [branchId], references: [id])
+  tripId            String
+  trip              Trip          @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  recipientName     String
+  amount            Decimal       @db.Decimal(18, 2)
+  purpose           String
+  status            AdvanceStatus @default(REQUESTED)
+  requestedByUserId String
+  approvedByUserId  String?
+  paidByUserId      String?
+  paidAt            DateTime?
+  settledAt         DateTime?
+  cancelReason      String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  @@index([branchId])
+  @@index([tripId])
+  @@index([status])
+  @@map("advances")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Module 7 — Chứng từ và bằng chứng giao nhận (+ AI kiểm tra ảnh / đọc hóa đơn)
+// Xem docs/ai-processing.md và docs/data-model.md mục 2 bước 7.
+// ─────────────────────────────────────────────────────────────────────────
+
+// Nhóm A (kiểm tra ảnh xe/container/seal) chạy AI khác luồng với nhóm B (đọc hóa
+// đơn) — mỗi RequiredDocumentType chỉ gắn 1 nhóm AI, hoặc không có AI (chứng từ
+// chỉ cần thu thập, không cần đọc/kiểm tra tự động).
+enum AIJobType {
+  PHOTO_CHECK
+  INVOICE_OCR
+}
+
+enum AIJobStatus {
+  QUEUED
+  PROCESSING
+  VERIFIED
+  NEEDS_REVIEW
+  FAILED
+}
+
+enum DocumentEvidenceStatus {
+  PENDING_REVIEW
+  NEEDS_REVIEW
+  VERIFIED
+  REJECTED
+  LOCKED
+}
+
+// Danh mục chứng từ bắt buộc (phân hệ "Danh mục chứng từ bắt buộc", module 7).
+// R1 tối thiểu: danh mục dùng chung cho mọi chuyến — lọc theo khách hàng/loại
+// chuyến (data-model.md mục 1) để dành cho khi có yêu cầu chi tiết hơn từ G3.
+model RequiredDocumentType {
+  id        String     @id @default(uuid())
+  code      String     @unique
+  name      String
+  aiJobType AIJobType? // null = chỉ thu thập, không có bước AI tự động
+  isActive  Boolean    @default(true)
+  createdAt DateTime   @default(now())
+
+  documentEvidences DocumentEvidence[]
+
+  @@map("required_document_types")
+}
+
+// Bằng chứng giao nhận gắn với 1 chuyến — luôn truy ngược được về Trip
+// (nguyên tắc traceability, data-model.md mục 2).
+model DocumentEvidence {
+  id                     String                 @id @default(uuid())
+  branchId               String
+  branch                 Branch                 @relation(fields: [branchId], references: [id])
+  tripId                 String
+  trip                   Trip                   @relation(fields: [tripId], references: [id])
+  requiredDocumentTypeId String
+  requiredDocumentType   RequiredDocumentType   @relation(fields: [requiredDocumentTypeId], references: [id])
+  fileUrl                String
+  fileHash               String
+  status                 DocumentEvidenceStatus @default(PENDING_REVIEW)
+  rejectedReason         String?
+  uploadedByUserId       String
+  lockedAt               DateTime?
+  lockedByUserId         String?
+  sharedAt               DateTime?
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
+
+  aiJobs AIProcessingJob[]
+
+  @@index([tripId])
+  @@index([branchId])
+  @@map("document_evidences")
+}
+
+// Hàng đợi xử lý AI bất đồng bộ — worker thật (Redis/BullMQ, xem architecture.md)
+// sẽ gọi LLM API rồi trả kết quả về qua AIProcessingJobService.submitRawResult().
+// Việc chọn nhà cung cấp LLM và chính sách bảo mật dữ liệu gửi ra ngoài CHƯA CHỐT
+// (xem docs/open-questions.md) — module này chỉ dựng vòng đời job + lớp validate
+// bắt buộc sau khi có kết quả, chưa tự gọi LLM thật.
+model AIProcessingJob {
+  id                 String           @id @default(uuid())
+  documentEvidenceId String
+  documentEvidence   DocumentEvidence @relation(fields: [documentEvidenceId], references: [id])
+  jobType            AIJobType
+  status             AIJobStatus      @default(QUEUED)
+  retryCount         Int              @default(0)
+  errorMessage       String?
+  requestedAt        DateTime         @default(now())
+  completedAt        DateTime?
+
+  extractionResult AIExtractionResult?
+
+  @@index([documentEvidenceId])
+  @@index([status])
+  @@map("ai_processing_jobs")
+}
+
+// Lưu cả kết quả gốc từ AI và kết quả sau hiệu chỉnh — khớp chức năng "Lưu kết quả
+// gốc, độ tin cậy, người sửa và kết quả cuối" (module 12, docs/ai-processing.md mục 3).
+model AIExtractionResult {
+  id                String          @id @default(uuid())
+  aiProcessingJobId String          @unique
+  aiProcessingJob   AIProcessingJob @relation(fields: [aiProcessingJobId], references: [id])
+  rawResult         Json
+  confidence        Float?
+  validatedStatus   AIJobStatus // chỉ VERIFIED | NEEDS_REVIEW sau khi qua lớp validate
+  validationNotes   String?
+
+  // Field trích xuất riêng cho INVOICE_OCR — tách cột (thay vì chỉ lưu trong JSON)
+  // để so khớp trùng hóa đơn bằng query DB thường (docs/ai-processing.md mục 3, #8).
+  invoiceIssuer    String?
+  invoiceNumber    String?
+  invoiceDate      DateTime?
+  invoiceSubtotal  Decimal?  @db.Decimal(18, 2)
+  invoiceVatAmount Decimal?  @db.Decimal(18, 2)
+  invoiceTotal     Decimal?  @db.Decimal(18, 2)
+
+  // Field trích xuất riêng cho PHOTO_CHECK.
+  containerNumber String?
+  plateNumber     String?
+
+  correctedByUserId String?
+  finalResult       Json?
+  createdAt         DateTime @default(now())
+
+  @@index([invoiceIssuer, invoiceNumber, invoiceDate])
+  @@map("ai_extraction_results")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Module 9 — Đối soát, bảng kê, hóa đơn và công nợ vận tải
+// Xem docs/data-model.md mục 2 bước 9-10 và mục 3 (state machine Invoice).
+// ─────────────────────────────────────────────────────────────────────────
+
+enum ReconciliationType {
+  CUSTOMER
+  CARRIER
+}
+
+enum ReconciliationStatus {
+  DRAFT
+  CONFIRMED
+  LOCKED
+  REOPENED
+}
+
+enum InvoiceStatus {
+  DRAFT
+  PENDING_APPROVAL
+  ISSUED
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  DISPUTED
+  ADJUSTED
+  REPLACED
+  VOIDED
+}
+
+enum ReceivableStatus {
+  OPEN
+  PARTIALLY_PAID
+  PAID
+}
+
+enum PayableStatus {
+  OPEN
+  PARTIALLY_PAID
+  PAID
+}
+
+// Bảng kê đối soát — CUSTOMER (khách hàng, dẫn tới Invoice) hoặc CARRIER (nhà vận
+// tải thuê ngoài, dẫn tới AccountsPayable, không phát hành Invoice của chính G3).
+// Không tự tổng hợp dòng — nhân viên đối soát thêm dòng thủ công tham chiếu
+// ShipmentOrder/Trip (docs/data-model.md mục 4: giá mua/giá bán không có bảng giá nhà
+// vận tải trong schema hiện tại, không tự suy ra số tiền).
+model ReconciliationStatement {
+  id                String               @id @default(uuid())
+  branchId          String
+  branch            Branch               @relation(fields: [branchId], references: [id])
+  type              ReconciliationType
+  customerId        String?
+  customer          Customer?            @relation(fields: [customerId], references: [id])
+  carrierId         String?
+  carrier           Carrier?             @relation(fields: [carrierId], references: [id])
+  code              String               @unique
+  periodFrom        DateTime
+  periodTo          DateTime
+  status            ReconciliationStatus @default(DRAFT)
+  totalAmount       Decimal              @default(0) @db.Decimal(18, 2)
+  confirmedByUserId String?
+  confirmedAt       DateTime?
+  lockedAt          DateTime?
+  reopenReason      String?
+  createdByUserId   String
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+
+  lines           ReconciliationLine[]
+  invoice         Invoice?
+  accountsPayable AccountsPayable?
+
+  @@index([branchId])
+  @@index([customerId])
+  @@index([carrierId])
+  @@map("reconciliation_statements")
+}
+
+// Mỗi dòng truy ngược về đúng 1 ShipmentOrder (đối soát khách) hoặc 1 Trip (đối
+// soát nhà vận tải) — không copy dữ liệu, chỉ tham chiếu ID (data-model.md mục 2).
+model ReconciliationLine {
+  id              String                  @id @default(uuid())
+  statementId     String
+  statement       ReconciliationStatement @relation(fields: [statementId], references: [id], onDelete: Cascade)
+  shipmentOrderId String?
+  shipmentOrder   ShipmentOrder?          @relation(fields: [shipmentOrderId], references: [id])
+  tripId          String?
+  trip            Trip?                   @relation(fields: [tripId], references: [id])
+  description     String
+  amount          Decimal                 @db.Decimal(18, 2)
+  createdByUserId String
+  createdAt       DateTime                @default(now())
+
+  @@index([statementId])
+  @@index([shipmentOrderId])
+  @@index([tripId])
+  @@map("reconciliation_lines")
+}
+
+// Hóa đơn điện tử phát hành cho khách hàng — luôn từ 1 ReconciliationStatement đã
+// LOCKED. Tích hợp VNPT thật CHƯA làm (docs/open-questions.md không có xác nhận nhà
+// cung cấp/định dạng) — trường eInvoice* chỉ ghi trạng thái để không chặn luồng
+// chính khi bên thứ ba chưa sẵn sàng (ràng buộc 7, CLAUDE.md).
+model Invoice {
+  id                        String                  @id @default(uuid())
+  branchId                  String
+  branch                    Branch                  @relation(fields: [branchId], references: [id])
+  customerId                String
+  customer                  Customer                @relation(fields: [customerId], references: [id])
+  reconciliationStatementId String                  @unique
+  reconciliationStatement   ReconciliationStatement @relation(fields: [reconciliationStatementId], references: [id])
+  code                      String                  @unique
+  status                    InvoiceStatus           @default(DRAFT)
+  subtotal                  Decimal                 @db.Decimal(18, 2)
+  vatAmount                 Decimal                 @db.Decimal(18, 2)
+  total                     Decimal                 @db.Decimal(18, 2)
+  dueDate                   DateTime?
+  issuedAt                  DateTime?
+  voidReason                String?
+  disputeReason             String?
+  eInvoiceStatus            String?
+  eInvoiceError             String?
+  createdByUserId           String
+  createdAt                 DateTime                @default(now())
+  updatedAt                 DateTime                @updatedAt
+
+  accountsReceivable AccountsReceivable?
+
+  @@index([branchId])
+  @@index([customerId])
+  @@map("invoices")
+}
+
+// Công nợ phải thu — sinh tự động khi Invoice chuyển ISSUED, 1-1 với Invoice.
+model AccountsReceivable {
+  id         String           @id @default(uuid())
+  branchId   String
+  branch     Branch           @relation(fields: [branchId], references: [id])
+  customerId String
+  customer   Customer         @relation(fields: [customerId], references: [id])
+  invoiceId  String           @unique
+  invoice    Invoice          @relation(fields: [invoiceId], references: [id])
+  amount     Decimal          @db.Decimal(18, 2)
+  paidAmount Decimal          @default(0) @db.Decimal(18, 2)
+  dueDate    DateTime?
+  status     ReceivableStatus @default(OPEN)
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+
+  payments ReceivablePayment[]
+
+  @@index([branchId])
+  @@index([customerId])
+  @@map("accounts_receivable")
+}
+
+model ReceivablePayment {
+  id                   String             @id @default(uuid())
+  accountsReceivableId String
+  accountsReceivable   AccountsReceivable @relation(fields: [accountsReceivableId], references: [id])
+  amount               Decimal            @db.Decimal(18, 2)
+  method               String // chuyển khoản | tiền mặt | khác — free text R1
+  reference            String?
+  recordedByUserId     String
+  recordedAt           DateTime           @default(now())
+
+  @@index([accountsReceivableId])
+  @@map("receivable_payments")
+}
+
+// Công nợ phải trả nhà vận tải — sinh tự động khi 1 ReconciliationStatement CARRIER
+// chuyển LOCKED, 1-1 với statement đó (không có Invoice của G3 ở chiều này).
+model AccountsPayable {
+  id                        String                  @id @default(uuid())
+  branchId                  String
+  branch                    Branch                  @relation(fields: [branchId], references: [id])
+  carrierId                 String
+  carrier                   Carrier                 @relation(fields: [carrierId], references: [id])
+  reconciliationStatementId String                  @unique
+  reconciliationStatement   ReconciliationStatement @relation(fields: [reconciliationStatementId], references: [id])
+  amount                    Decimal                 @db.Decimal(18, 2)
+  paidAmount                Decimal                 @default(0) @db.Decimal(18, 2)
+  dueDate                   DateTime?
+  status                    PayableStatus           @default(OPEN)
+  createdAt                 DateTime                @default(now())
+  updatedAt                 DateTime                @updatedAt
+
+  payments PayablePayment[]
+
+  @@index([branchId])
+  @@index([carrierId])
+  @@map("accounts_payable")
+}
+
+model PayablePayment {
+  id                String          @id @default(uuid())
+  accountsPayableId String
+  accountsPayable   AccountsPayable @relation(fields: [accountsPayableId], references: [id])
+  amount            Decimal         @db.Decimal(18, 2)
+  method            String
+  reference         String?
+  recordedByUserId  String
+  recordedAt        DateTime        @default(now())
+
+  @@index([accountsPayableId])
+  @@map("payable_payments")
+}

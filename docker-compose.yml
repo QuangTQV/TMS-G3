@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: tms
+      POSTGRES_PASSWORD: tms
+      POSTGRES_DB: tms_g3
+    ports:
+      - "5455:5432"
+    volumes:
+      - tms_postgres_data:/var/lib/postgresql/data
+
+volumes:
+  tms_postgres_data:
