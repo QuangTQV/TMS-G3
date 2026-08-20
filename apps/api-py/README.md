@@ -72,6 +72,23 @@ bảng. `uv run ...` tự dùng đúng `.venv` của thư mục này mà không 
 .venv/bin/activate` thủ công; `uv sync` không phụ thuộc gói hệ điều hành
 `python3-venv` (hữu ích khi máy không có sudo).
 
+### Chạy bằng Docker (thay cho `uv run` trực tiếp)
+
+```bash
+cd /path/to/TMS-G3   # thư mục gốc, nơi có docker-compose.yml
+docker compose up -d --build api-py   # tự kéo theo postgres nếu chưa chạy
+```
+
+Container build bằng `apps/api-py/Dockerfile` (base `ghcr.io/astral-sh/uv`, cài đúng
+`uv.lock`), nối vào cùng network Docker với `postgres` (hostname `postgres`, không
+phải `localhost`) — `DATABASE_URL` cho container đã khai báo sẵn trong
+`docker-compose.yml`, không đọc từ `.env` của thư mục này. Vẫn phải chạy
+`npx prisma migrate deploy`/`npm run prisma:seed` từ `apps/api` **trên host** trước
+(container không tự tạo bảng). Sửa code trong `app/` cần build lại image
+(`docker compose up -d --build api-py`) — không có hot-reload như `uv run --reload`,
+nên khi đang code nhanh, `uv run` (chạy trực tiếp trên host) vẫn tiện hơn; Docker phù
+hợp khi muốn môi trường chạy đóng gói sẵn, không phụ thuộc máy đã cài Python/uv chưa.
+
 ```bash
 curl -s http://localhost:8011/health
 curl -s -X POST http://localhost:8011/v1/auth/login \

@@ -81,6 +81,11 @@ API chạy ở `http://localhost:8011`, tự restart khi sửa code (`--reload`)
 được độc lập ở cổng `3011` nếu cần so sánh/đối chiếu — không bắt buộc cho việc chạy
 web nội bộ nữa.)
 
+> Muốn chạy bằng Docker thay vì `uv run` trực tiếp: `docker compose up -d --build
+> api-py` (từ thư mục gốc) — xem mục "Chạy bằng Docker" ở
+> [apps/api-py/README.md](./apps/api-py/README.md). Vẫn cần chạy migrate/seed từ
+> `apps/api` trên host trước như bước 3.
+
 **5. Cấu hình và chạy web nội bộ (terminal khác):**
 
 ```bash

@@ -11,5 +11,23 @@ services:
     volumes:
       - tms_postgres_data:/var/lib/postgresql/data
 
+  # Backend Python (FastAPI) — xem apps/api-py/README.md. Schema DB vẫn do Prisma sở
+  # hữu: chạy `npx prisma migrate deploy` + `npm run prisma:seed` từ apps/api (trên
+  # host, trỏ DATABASE_URL vào localhost:5455) trước khi container này có dữ liệu để
+  # dùng — service này không tự tạo bảng.
+  api-py:
+    build:
+      context: ./apps/api-py
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: "postgresql+psycopg://tms:tms@postgres:5432/tms_g3"
+      JWT_SECRET: "dev-only-change-me"
+      JWT_EXPIRES_IN: "8h"
+      PORT: "8011"
+    ports:
+      - "8011:8011"
+    depends_on:
+      - postgres
+
 volumes:
   tms_postgres_data:
