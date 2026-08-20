@@ -123,6 +123,41 @@ xuất mục 4) — đây không còn chỉ là đề xuất, code đã chạy �
 dựng Postgres cục bộ ở cổng `5455`; API chạy ở cổng `3011` (`apps/api/.env`); seed tạo
 sẵn user `admin@g3.local` / `ChangeMe123!` với role ADMIN có toàn quyền.
 
+**Backend đã chuyển hẳn sang Python** (theo quyết định của người phụ trách dự án,
+không phải lựa chọn kỹ thuật của Claude Code): `apps/api-py` (FastAPI + SQLAlchemy
+2.0) đã port đủ toàn bộ 9 module nghiệp vụ + kernel, và **frontend (`apps/web`) đã
+trỏ sang đây** (`VITE_API_BASE_URL=http://localhost:8011` trong
+`apps/web/.env.development`). Schema DB vẫn do Prisma sở hữu
+(`apps/api/prisma/migrations`) — `apps/api-py` chỉ đọc/ghi qua cùng một Postgres,
+chưa tự chạy migration riêng, chưa dùng Alembic. `apps/api` (NestJS) vẫn còn nguyên
+trong repo (chưa xoá) nhưng không còn phục vụ frontend — coi như bản tham chiếu/dự
+phòng cho tới khi có quyết định khác.
+
+Khi đối chiếu API contract giữa 2 backend để cắt frontend, phát hiện 2 chỗ NestJS
+trả **JS number thường** thay vì Decimal-as-string như quy ước chung — vì NestJS tự
+tính tổng qua `.toNumber()` rồi cộng bằng JS `+`, không giữ instance Prisma Decimal:
+`TripCostService.summary().totals` (`apps/api/src/modules/trip-cost/trip-cost.service.ts`)
+và `TripService.suggestResources().requiredWeightKg/excessCapacityKg`
+(`apps/api/src/modules/trip/trip.service.ts`). `apps/api-py` đã khớp đúng 2 ngoại lệ
+này (`float(...)` thay vì `str(...)`) sau khi đối chiếu type ở
+`apps/web/src/features/trips/api.ts` — nếu thêm chỗ tính tổng tương tự sau này, kiểm
+tra NestJS gốc có `.toNumber()` hay không trước khi quyết định serialize kiểu gì.
+
+Đã port và test end-to-end (curl, cùng dữ liệu seed thật) toàn bộ: kernel (auth JWT,
+RBAC, audit log, idempotency), Module 2 (Khách hàng), Module 3 (Hợp đồng/Bảng giá/Báo
+giá, kể cả convert-to-order gọi chéo sang module 4), Module 4 (Đơn vận chuyển), Module
+10 (Xe/Tài xế/Nhà vận tải), Module 5/6 (Chuyến — state machine đầy đủ, gợi ý nguồn lực,
+ghép/tách đơn), Module 7 (Chứng từ + AI processing job, kể cả pipeline VLM/OCR tắt mặc
+định), Module 8 (Chi phí/tạm ứng, kể cả tạo nháp từ kết quả OCR), Module 9 (Đối soát/
+Hóa đơn/Công nợ phải thu-trả, kể cả các ràng buộc khóa/mở lại/thanh toán một phần).
+
+Một lỗi tương thích quan trọng đã phát hiện và sửa: hash mật khẩu argon2id do `npm
+argon2` sinh có thứ tự tham số PHC khác `argon2-cffi` (Python) — đã chuẩn hoá lại
+trong `security.py` nên user cũ đăng nhập được ngay, không cần đổi mật khẩu. Chi tiết
+quy ước khi chuyển tiếp (giữ nguyên contract JSON, RBAC, audit log, ai sở hữu schema
+migration, cách serialize Decimal/DateTime) nằm ở `apps/api-py/README.md` — đọc trước
+khi sửa/thêm gì ở đây, không tự suy đoán lại từ đầu.
+
 Web nội bộ đã khởi tạo tại `apps/web` (Vite + React + TypeScript + React Router +
 TanStack Query, dev server ở cổng `5173`, `vite.config.ts` bind `0.0.0.0` để truy cập
 được từ máy khác qua port-forward/firewall; `.env.development` trỏ `VITE_API_BASE_URL`
@@ -143,18 +178,22 @@ module 1/11.
 Đã implement (schema + service + controller + audit log + RBAC guard cho mọi
 endpoint):
 
-| Module | Trạng thái |
-|---|---|
-| 2. Khách hàng | Hồ sơ khách hàng, liên hệ, địa điểm, credit terms, khóa/mở |
-| 3. Hợp đồng/giá/báo giá | Contract, PriceList + line + surcharge, Quote (tạo/duyệt/từ chối/chuyển thành đơn) |
-| 4. Đơn vận chuyển | ShipmentOrder + điểm lấy/giao + hàng hóa, state machine Draft→...→Cancelled |
-| 5. Kế hoạch/điều phối | Gộp vào TripService: ghép/tách đơn vào chuyến (`TripOrderLink`), gán xe/tài xế/NCC, phát lệnh, **gợi ý xe/tài xế/NCC theo tải trọng đơn + trạng thái bận/rảnh** (`GET /v1/trips/:id/resource-suggestions`) |
-| 6. Chuyến vận tải | Trip state machine đầy đủ (Planned→Dispatched→InProgress→CompletedPendingDocs→CompletedVerified/Closed, Paused/Cancelled/Exception) |
-| 7. Chứng từ & AI | Xem chi tiết bên dưới |
-| 8. Chi phí/tạm ứng/quyết toán | Chi phí kế hoạch và thực tế, luồng trình duyệt/duyệt/từ chối; tạm ứng đề nghị → duyệt → chi → quyết toán |
-| 9. Đối soát/hóa đơn/công nợ | Xem chi tiết bên dưới |
-| 10. Nguồn lực | Vehicle, Driver, Carrier (CRUD tối thiểu, chưa có Trailer/Container/Seal/Depot riêng) |
-| 12. Quản trị (kernel) | Auth JWT, RBAC (Role/Permission/UserRole), AuditLogService (append-only), IdempotencyService |
+Cột "Python" đánh dấu module đã có bản chuyển đổi song song ở `apps/api-py` (cùng
+contract JSON, cùng DB) — NestJS (`apps/api`) vẫn là bản chính, frontend vẫn trỏ vào
+đó.
+
+| Module | Trạng thái | Python |
+|---|---|---|
+| 2. Khách hàng | Hồ sơ khách hàng, liên hệ, địa điểm, credit terms, khóa/mở | ✅ |
+| 3. Hợp đồng/giá/báo giá | Contract, PriceList + line + surcharge, Quote (tạo/duyệt/từ chối/chuyển thành đơn) | ✅ |
+| 4. Đơn vận chuyển | ShipmentOrder + điểm lấy/giao + hàng hóa, state machine Draft→...→Cancelled | ✅ |
+| 5. Kế hoạch/điều phối | Gộp vào TripService: ghép/tách đơn vào chuyến (`TripOrderLink`), gán xe/tài xế/NCC, phát lệnh, **gợi ý xe/tài xế/NCC theo tải trọng đơn + trạng thái bận/rảnh** (`GET /v1/trips/:id/resource-suggestions`) | ✅ |
+| 6. Chuyến vận tải | Trip state machine đầy đủ (Planned→Dispatched→InProgress→CompletedPendingDocs→CompletedVerified/Closed, Paused/Cancelled/Exception) | ✅ |
+| 7. Chứng từ & AI | Xem chi tiết bên dưới | ✅ |
+| 8. Chi phí/tạm ứng/quyết toán | Chi phí kế hoạch và thực tế, luồng trình duyệt/duyệt/từ chối; tạm ứng đề nghị → duyệt → chi → quyết toán | ✅ |
+| 9. Đối soát/hóa đơn/công nợ | Xem chi tiết bên dưới | ✅ |
+| 10. Nguồn lực | Vehicle, Driver, Carrier (CRUD tối thiểu, chưa có Trailer/Container/Seal/Depot riêng) | ✅ |
+| 12. Quản trị (kernel) | Auth JWT, RBAC (Role/Permission/UserRole), AuditLogService (append-only), IdempotencyService | ✅ |
 
 **Chưa làm**: module 1 (bảng điều hành), module 11 (báo cáo), module 13 (kế toán tổng
 hợp — chờ quyết định). Trailer/Container/Seal/Depot (module 10) chưa có model riêng.

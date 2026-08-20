@@ -12,12 +12,18 @@ chi tiết hơn theo từng chủ đề nằm ở [docs/](./docs/README.md).
 ```
 TMS-G3/
 ├── apps/
-│   ├── api/    # Backend NestJS — nguồn sự thật của business logic (cổng 3011)
-│   └── web/    # Web nội bộ React + Vite (cổng 5173)
+│   ├── api/     # Backend NestJS — vẫn còn trong repo, không còn phục vụ frontend (cổng 3011)
+│   ├── api-py/  # Backend Python (FastAPI) — backend đang phục vụ frontend, xem apps/api-py/README.md
+│   └── web/     # Web nội bộ React + Vite (cổng 5173), trỏ vào apps/api-py
 ├── docs/       # Tài liệu nghiệp vụ/kỹ thuật (data model, API convention, ...)
 ├── docker-compose.yml   # PostgreSQL cục bộ (cổng 5455)
 └── CLAUDE.md   # Nguồn sự thật về phạm vi nghiệp vụ + trạng thái triển khai
 ```
+
+> Backend đã chuyển hẳn sang Python: `apps/api-py` (FastAPI + SQLAlchemy, cổng
+> `8011`) đã port đủ 9 module + kernel và `apps/web/.env.development` đã trỏ
+> `VITE_API_BASE_URL` sang đây. `apps/api` (NestJS) vẫn còn trong repo làm bản tham
+> chiếu/dự phòng, không tự xoá — xem [apps/api-py/README.md](./apps/api-py/README.md).
 
 ## Yêu cầu môi trường
 
@@ -38,8 +44,8 @@ npm install
 docker compose up -d
 ```
 
-**3. Cấu hình và khởi tạo database cho API** (toàn bộ bước này chạy trong
-`apps/api` — nhớ `cd` vào đó trước, các lệnh dưới không tự lặp lại `cd`):
+**3. Khởi tạo database** (schema vẫn do Prisma sở hữu — `apps/api-py` không tự chạy
+migration/seed riêng, phải qua `apps/api` dù server chạy thật là Python):
 
 ```bash
 cd apps/api
@@ -47,8 +53,7 @@ cp .env.example .env
 ```
 
 `.env.example` đã khớp sẵn với `docker-compose.yml` (`DATABASE_URL` trỏ về
-`localhost:5455`). Sửa lại nếu bạn dùng PostgreSQL khác, hoặc muốn đổi `PORT`
-(mặc định `3011`).
+`localhost:5455`). Sửa lại nếu bạn dùng PostgreSQL khác.
 
 ```bash
 npx prisma migrate deploy   # áp toàn bộ migration vào DB — vẫn đang trong apps/api
@@ -62,14 +67,19 @@ email:    admin@g3.local
 password: ChangeMe123!
 ```
 
-**4. Chạy API (giữ terminal này chạy):**
+**4. Chạy API Python (giữ terminal này chạy):**
 
 ```bash
-npm run start:dev
+cd apps/api-py
+uv venv .venv && source .venv/bin/activate && uv pip install -r requirements.txt
+cp .env.example .env   # sửa DATABASE_URL nếu Postgres không ở cổng 5455
+uvicorn app.main:app --host 0.0.0.0 --port 8011 --reload
 ```
 
-API chạy ở `http://localhost:3011` (hoặc `PORT` bạn đặt trong `.env`), tự
-restart khi sửa code.
+API chạy ở `http://localhost:8011`, tự restart khi sửa code (`--reload`). Chi tiết ở
+[apps/api-py/README.md](./apps/api-py/README.md). (`apps/api`, bản NestJS, vẫn dùng
+được độc lập ở cổng `3011` nếu cần so sánh/đối chiếu — không bắt buộc cho việc chạy
+web nội bộ nữa.)
 
 **5. Cấu hình và chạy web nội bộ (terminal khác):**
 
@@ -77,15 +87,15 @@ restart khi sửa code.
 cd apps/web
 ```
 
-Tạo/sửa `.env.development`, trỏ đúng nơi API đang chạy:
+Tạo/sửa `.env.development`, trỏ đúng nơi API Python đang chạy:
 
 ```
-VITE_API_BASE_URL=http://localhost:3011
+VITE_API_BASE_URL=http://localhost:8011
 ```
 
 > Nếu chạy trên máy chủ remote/VPS và mở từ trình duyệt trên máy khác, đổi giá
 > trị này sang địa chỉ IP/tên miền thật của máy chủ (không phải `localhost`), và
-> đảm bảo firewall cho phép cổng `5173`/`3011` (xem mục Troubleshooting bên dưới).
+> đảm bảo firewall cho phép cổng `5173`/`8011` (xem mục Troubleshooting bên dưới).
 
 ```bash
 npm run dev
@@ -97,9 +107,9 @@ Web chạy ở `http://localhost:5173`. Mở trình duyệt, đăng nhập bằn
 ## Chạy lại (sau lần đầu)
 
 ```bash
-docker compose up -d          # nếu Postgres chưa chạy
-cd apps/api && npm run start:dev     # terminal 1
-cd apps/web && npm run dev           # terminal 2
+docker compose up -d                                              # nếu Postgres chưa chạy
+cd apps/api-py && source .venv/bin/activate && uvicorn app.main:app --host 0.0.0.0 --port 8011 --reload   # terminal 1
+cd apps/web && npm run dev                                        # terminal 2
 ```
 
 ## Lệnh hữu ích
@@ -134,10 +144,10 @@ npm run preview  # chạy thử bản build production
 ## Kiểm tra nhanh mọi thứ đã chạy đúng
 
 ```bash
-curl -s http://localhost:3011/v1/customers -H "Authorization: Bearer x"
+curl -s http://localhost:8011/v1/customers -H "Authorization: Bearer x"
 # mong đợi: {"error":{"code":"UNAUTHENTICATED", ...}} — nghĩa là API đã lên, chỉ là token giả
 
-curl -s -X POST http://localhost:3011/v1/auth/login \
+curl -s -X POST http://localhost:8011/v1/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email":"admin@g3.local","password":"ChangeMe123!"}'
 # mong đợi: {"data":{"accessToken":"...","user":{...}}}
@@ -158,7 +168,7 @@ curl -s -X POST http://localhost:3011/v1/auth/login \
   Mở cổng cần dùng:
   ```bash
   sudo ufw allow 5173/tcp
-  sudo ufw allow 3011/tcp
+  sudo ufw allow 8011/tcp
   ```
   Nếu máy chủ là VPS/cloud, có thể còn một lớp firewall khác ở phía nhà cung
   cấp (security group) cần mở riêng qua control panel.
