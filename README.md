@@ -71,9 +71,9 @@ password: ChangeMe123!
 
 ```bash
 cd apps/api-py
-uv venv .venv && source .venv/bin/activate && uv pip install -r requirements.txt
+uv sync                # đọc pyproject.toml + uv.lock, tự tạo .venv
 cp .env.example .env   # sửa DATABASE_URL nếu Postgres không ở cổng 5455
-uvicorn app.main:app --host 0.0.0.0 --port 8011 --reload
+uv run uvicorn app.main:app --host 0.0.0.0 --port 8011 --reload
 ```
 
 API chạy ở `http://localhost:8011`, tự restart khi sửa code (`--reload`). Chi tiết ở
@@ -108,7 +108,7 @@ Web chạy ở `http://localhost:5173`. Mở trình duyệt, đăng nhập bằn
 
 ```bash
 docker compose up -d                                              # nếu Postgres chưa chạy
-cd apps/api-py && source .venv/bin/activate && uvicorn app.main:app --host 0.0.0.0 --port 8011 --reload   # terminal 1
+cd apps/api-py && uv run uvicorn app.main:app --host 0.0.0.0 --port 8011 --reload   # terminal 1
 cd apps/web && npm run dev                                        # terminal 2
 ```
 

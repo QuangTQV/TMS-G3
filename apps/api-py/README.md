@@ -54,17 +54,23 @@ xem ví dụ đã sửa ở `document_types.py`, `trip_cost.py`.
 
 ## Chạy
 
+Quản lý dependency bằng **uv** (không dùng `pip`/`requirements.txt`) — khai báo ở
+`pyproject.toml`, khoá phiên bản ở `uv.lock` (commit vào git để mọi máy cài đúng y
+hệt). Thêm/gỡ package qua `uv add <tên>` / `uv remove <tên>`, không tự sửa tay
+`pyproject.toml` rồi quên chạy lock lại.
+
 ```bash
 cd apps/api-py
-uv venv .venv && source .venv/bin/activate && uv pip install -r requirements.txt
+uv sync                # đọc pyproject.toml + uv.lock, tự tạo .venv, cài đúng phiên bản đã khoá
 cp .env.example .env   # sửa DATABASE_URL nếu Postgres không ở cổng 5455
-uvicorn app.main:app --host 0.0.0.0 --port 8011 --reload
+uv run uvicorn app.main:app --host 0.0.0.0 --port 8011 --reload
 ```
 
 Yêu cầu Postgres đã có schema (đã chạy `npx prisma migrate deploy` và
 `npm run prisma:seed` phía `apps/api` — xem README gốc) vì service này không tự tạo
-bảng. Không dùng `python3 -m venv` nếu máy thiếu gói `python3-venv` (không có sudo) —
-`uv venv` không phụ thuộc gói hệ điều hành đó.
+bảng. `uv run ...` tự dùng đúng `.venv` của thư mục này mà không cần `source
+.venv/bin/activate` thủ công; `uv sync` không phụ thuộc gói hệ điều hành
+`python3-venv` (hữu ích khi máy không có sudo).
 
 ```bash
 curl -s http://localhost:8011/health
